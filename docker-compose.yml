@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  fastapi-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: gemini-wrapper:latest
+    container_name: gemini-wrapper
+    volumes:
+      - ./.env:/app/.env
+    restart: unless-stopped
+    env_file:
+      - ".env"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  tunnel:
+    container_name: gemini-wrapper-tunnel
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
