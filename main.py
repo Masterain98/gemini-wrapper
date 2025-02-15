@@ -8,6 +8,7 @@ from google import genai
 import uuid
 import time
 import json
+from base_logger import logger
 
 
 # -------------------------
@@ -50,7 +51,7 @@ class Message(BaseModel):
     content: str
 
 class OpenAIChatRequest(BaseModel):
-    model: Literal[*allowed_models]
+    model: str
     messages: List[Message]
     # New field to enable/disable streaming
     stream: Optional[bool] = False
@@ -138,6 +139,7 @@ async def create_chat_completion(request: OpenAIChatRequest):
     # Extract the user prompt from the last message
     model_requested = request.model
     user_prompt = request.messages[-1].content if request.messages else ""
+    logger.info(f"Received request for model: {model_requested}; length: {len(user_prompt)}")
 
     # Call the Gemini API
     gemini_response = gemini_client.models.generate_content(
