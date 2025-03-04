@@ -1,6 +1,6 @@
 import os
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import types
@@ -48,6 +48,17 @@ current_key_index = 0
 logger.info(f"Gemini key {current_key_index}: *****{gemini_keys[current_key_index][:5]} is used")
 gemini_client = genai.Client(api_key=gemini_keys[current_key_index])
 
+STATIC_API_KEY = os.getenv("API_KEY")
+if not STATIC_API_KEY:
+    raise RuntimeError("API_KEY environment variable is not set.")
+
+
+async def verify_api_key(authorization: str = Header(...)):
+    authorization = authorization.replace("Bearer ", "")
+    if authorization != STATIC_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 # Rotates to next key on 418
 async def rotate_key_on_418():
     global current_key_index, gemini_client
@@ -62,7 +73,7 @@ async def rotate_key_on_418():
 # -------------------------
 #   Endpoint: /v1/models
 # -------------------------
-@app.get("/v1/models")
+@app.get("/v1/models", dependencies=[Depends(verify_api_key)])
 async def list_models():
     """
     Return a minimal OpenAI-like list of models.
@@ -83,7 +94,7 @@ async def list_models():
 # -------------------------
 #   Endpoint: /v1/chat/completions
 # -------------------------
-@app.post("/v1/chat/completions")
+@app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
 async def create_chat_completion(request: OpenAIChatRequest):
     """
     Mock an OpenAI /v1/chat/completions endpoint that:
