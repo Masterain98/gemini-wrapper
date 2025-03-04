@@ -1,14 +1,16 @@
 import os
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from typing import List, Optional, Literal
 from google import genai
+from google.genai import types
 import uuid
 import time
 import json
+import asyncio
 from base_logger import logger
+from models import (Message, OpenAIChatRequest, ChatCompletionChoice, UsageInfo, ChatCompletionResponse,
+                    ModelPermission, ModelInfo, ModelListResponse)
 
 
 # -------------------------
@@ -35,72 +37,27 @@ allowed_models = [model_id for models in gemini_models.values() for model_id in 
 # Create the FastAPI app
 app = FastAPI()
 
-# Hard-coded Gemini API key (for demonstration)
-GEMINI_API_KEY = os.getenv("GEMINI_KEY", None)
-if GEMINI_API_KEY is None:
+# Process Gemini Keys
+lock = asyncio.Lock()
+gemini_keys = os.getenv("GEMINI_KEY", "").split(",")
+if gemini_keys is None:
     raise RuntimeError("Please set the GEMINI_KEY environment variable.")
 
-# Initialize Gemini client
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+# Initialize Gemini client with the first key
+current_key_index = 0
+logger.info(f"Gemini key {current_key_index}: *****{gemini_keys[current_key_index][:5]} is used")
+gemini_client = genai.Client(api_key=gemini_keys[current_key_index])
 
-# -------------------------
-#  Pydantic Request Models
-# -------------------------
-class Message(BaseModel):
-    role: str
-    content: str
-
-class OpenAIChatRequest(BaseModel):
-    model: str
-    messages: List[Message]
-    # New field to enable/disable streaming
-    stream: Optional[bool] = False
-
-# -------------------------
-#  OpenAI-Like Response Models
-# -------------------------
-class ChatCompletionChoice(BaseModel):
-    index: int
-    message: Message
-    finish_reason: str
-
-class UsageInfo(BaseModel):
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-
-class ChatCompletionResponse(BaseModel):
-    id: str
-    object: str
-    created: int
-    choices: List[ChatCompletionChoice]
-    usage: UsageInfo
-
-# For the /v1/models endpoint
-class ModelPermission(BaseModel):
-    id: str = "permission-id"
-    object: str = "model_permission"
-    created: int = int(time.time())
-    allow_create_engine: bool = True
-    allow_sampling: bool = True
-    allow_logprobs: bool = True
-    allow_search_indices: bool = True
-    allow_view: bool = True
-    allow_fine_tuning: bool = True
-    organization: str = "*"
-    group: Optional[str] = None
-    is_blocking: bool = False
-
-class ModelInfo(BaseModel):
-    id: str
-    object: str = "model"
-    owned_by: str
-    permission: List[ModelPermission]
-
-class ModelListResponse(BaseModel):
-    object: str = "list"
-    data: List[ModelInfo]
-
+# Rotates to next key on 418
+async def rotate_key_on_418():
+    global current_key_index, gemini_client
+    async with lock:
+        if current_key_index < len(gemini_keys) - 1:
+            current_key_index += 1
+            gemini_client = genai.Client(api_key=gemini_keys[current_key_index])
+        else:
+            current_key_index = 0
+            gemini_client = genai.Client(api_key=gemini_keys[current_key_index])
 
 # -------------------------
 #   Endpoint: /v1/models
@@ -139,13 +96,31 @@ async def create_chat_completion(request: OpenAIChatRequest):
     # Extract the user prompt from the last message
     model_requested = request.model
     user_prompt = request.messages[-1].content if request.messages else ""
+    model_temperature = request.temperature
     logger.info(f"Received request for model: {model_requested}; length: {len(user_prompt)}")
 
     # Call the Gemini API
-    gemini_response = gemini_client.models.generate_content(
-        model=model_requested,
-        contents=user_prompt
-    )
+    try:
+        gemini_response = gemini_client.models.generate_content(
+            model=model_requested,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                temperature=model_temperature
+            )
+        )
+    except HTTPException as e:
+        if e.status_code == 418:
+            await rotate_key_on_418()
+            gemini_response = gemini_client.models.generate_content(
+                model=model_requested,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    temperature=model_temperature
+                )
+            )
+        else:
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
+
     response_text = gemini_response.text
 
     # --------------------------------------
