@@ -19,16 +19,14 @@ from models import (Message, OpenAIChatRequest, ChatCompletionChoice, UsageInfo,
 gemini_models = {
     "Gemini": [
         "gemini-2.0-flash",
-        "gemini-2.0-flash-lite-preview-02-05",
+        "gemini-2.0-flash-lite",
         "gemini-1.5-flash",
         "gemini-1.5-flash-8b",
         "gemini-1.5-pro"
     ],
     "Gemini Experimental": [
-        "gemini-2.0-pro-exp-02-05",
-        "gemini-2.0-flash-thinking-exp-01-21",
-        "gemini-2.0-flash-exp",
-        "learnlm-1.5-pro-experimental"
+        "gemini-2.5-pro-exp-03-25",
+        "gemini-2.0-flash-thinking-exp-01-21"
     ]
 }
 allowed_models = [model_id for models in gemini_models.values() for model_id in models]
