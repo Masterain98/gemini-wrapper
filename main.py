@@ -8,6 +8,7 @@ import uuid
 import time
 import json
 import asyncio
+import httpx
 from base_logger import logger
 from models import (Message, OpenAIChatRequest, ChatCompletionChoice, UsageInfo, ChatCompletionResponse,
                     ModelPermission, ModelInfo, ModelListResponse)
@@ -16,24 +17,17 @@ from models import (Message, OpenAIChatRequest, ChatCompletionChoice, UsageInfo,
 # -------------------------
 # Available Gemini Models
 # -------------------------
-gemini_models = {
-    "Gemini": [
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
-        "gemini-1.5-pro"
-    ],
-    "Gemini Experimental": [
-        "gemini-2.5-pro-exp-03-25",
-        "gemini-2.0-flash-thinking-exp-01-21"
-    ]
-}
-allowed_models = [model_id for models in gemini_models.values() for model_id in models]
+gemini_models = {"Gemini": [], "Gemini Experimental": []}
 
+# Create the FastAPI lifespan event handler
+async def lifespan(app: FastAPI):
+    # Initial fetch and start periodic background task
+    await fetch_available_models()  # Initial fetch
+    asyncio.create_task(update_models_periodically())
+    yield
 
-# Create the FastAPI app
-app = FastAPI()
+# Update app initialization to use lifespan event handler
+app = FastAPI(lifespan=lifespan)
 
 # Process Gemini Keys
 lock = asyncio.Lock()
@@ -41,7 +35,7 @@ gemini_keys = os.getenv("GEMINI_KEY", "").split(",")
 if gemini_keys is None:
     raise RuntimeError("Please set the GEMINI_KEY environment variable.")
 
-# Initialize Gemini client with the first key
+# Initialize the Gemini client with the first key
 current_key_index = 0
 logger.info(f"Gemini key {current_key_index}: *****{gemini_keys[current_key_index][:5]} is used")
 gemini_client = genai.Client(api_key=gemini_keys[current_key_index])
@@ -57,7 +51,7 @@ async def verify_api_key(authorization: str = Header(...)):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-# Rotates to next key on 418
+# Rotates to the next key on 418
 async def rotate_key_on_418():
     global current_key_index, gemini_client
     async with lock:
@@ -67,6 +61,39 @@ async def rotate_key_on_418():
         else:
             current_key_index = 0
             gemini_client = genai.Client(api_key=gemini_keys[current_key_index])
+
+
+# -------------------------------------------
+# Function to fetch available Gemini models
+# -------------------------------------------
+async def fetch_available_models():
+    global gemini_models
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get("https://generativelanguage.googleapis.com/v1beta/models")
+        data = resp.json()
+        models_list = data.get("models", [])
+        new_models = {"Gemini": [], "Gemini Experimental": []}
+        for model in models_list:
+            model_id = model.get("id", model) if isinstance(model, dict) else model
+            if "exp" in model_id.lower() or "preview" in model_id.lower():
+                new_models["Gemini Experimental"].append(model_id)
+            else:
+                new_models["Gemini"].append(model_id)
+        gemini_models = new_models
+        logger.info("Gemini models updated: " + json.dumps(gemini_models))
+    except Exception as e:
+        logger.error(f"Error fetching models: {e}")
+
+
+# --------------------------------------------------
+# Background task for periodically updating models
+# --------------------------------------------------
+async def update_models_periodically():
+    while True:
+        await fetch_available_models()
+        await asyncio.sleep(3600)  # update every 1 hour
+
 
 # -------------------------
 #   Endpoint: /v1/models
